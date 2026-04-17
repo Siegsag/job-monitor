@@ -66,6 +66,28 @@ def superjob_max_rub(obj: dict[str, Any]) -> int:
     return int(obj.get("payment_to") or obj.get("payment_from") or 0)
 
 
+def superjob_looks_remote(raw: dict[str, Any]) -> bool:
+    pid = (raw.get("place_of_work") or {}).get("id")
+    if pid == 2:
+        return True
+    if raw.get("moveable"):
+        return True
+    blob = normalize_text(
+        " ".join(
+            [
+                raw.get("profession") or "",
+                raw.get("work") or "",
+                raw.get("candidat") or "",
+                str(raw.get("compensation") or ""),
+            ]
+        )
+    )
+    for hint in ("удален", "дистанц", "на дому", "не офис", "remote", "домашн", "онлайн"):
+        if hint in blob:
+            return True
+    return False
+
+
 def superjob_to_scam_raw(obj: dict[str, Any]) -> dict[str, Any]:
     pf = int(obj.get("payment_from") or 0)
     pt = int(obj.get("payment_to") or 0)
@@ -385,14 +407,18 @@ class JobMonitor:
             raise ValueError("Superjob: set search.superjob_keyword or search.keyword in config.json")
 
         lookback_hours = int(search.get("lookback_hours", 24))
-        if lookback_hours <= 24:
-            period = 1
-        elif lookback_hours <= 72:
-            period = 3
-        elif lookback_hours <= 168:
-            period = 7
+        period_override = sj_cfg.get("api_period")
+        if period_override is not None:
+            period = int(period_override)
         else:
-            period = 0
+            if lookback_hours <= 24:
+                period = 7
+            elif lookback_hours <= 72:
+                period = 7
+            elif lookback_hours <= 168:
+                period = 7
+            else:
+                period = 0
 
         max_pages = int(search.get("pages", 3))
         per_page = min(int(search.get("per_page", 50)), 100)
@@ -402,9 +428,11 @@ class JobMonitor:
         cutoff = now_utc() - timedelta(hours=lookback_hours)
 
         remote_only = bool(sj_cfg.get("remote_only", True))
+        client_side_remote = bool(sj_cfg.get("client_side_remote_filter", True))
         place_of_work = sj_cfg.get("place_of_work")
-        if place_of_work is None:
+        if place_of_work is None and not client_side_remote:
             place_of_work = 2 if remote_only else None
+        api_place = None if client_side_remote else place_of_work
 
         items: list[VacancyRecord] = []
         seen_ids: set[str] = set()
@@ -422,8 +450,8 @@ class JobMonitor:
                 params["no_agreement"] = 1
             if min_salary:
                 params["payment_from"] = min_salary
-            if place_of_work is not None:
-                params["place_of_work"] = int(place_of_work)
+            if api_place is not None:
+                params["place_of_work"] = int(api_place)
 
             resp = self.session.get(SUPERJOB_API_URL, params=params, timeout=self.requests_timeout)
             if not resp.ok:
@@ -446,6 +474,9 @@ class JobMonitor:
                     continue
                 seen_ids.add(vid)
 
+                if remote_only and client_side_remote and not superjob_looks_remote(raw):
+                    continue
+
                 pub_ts = raw.get("date_published")
                 published = superjob_unix_to_iso(int(pub_ts)) if pub_ts else now_utc().isoformat()
                 try:
@@ -460,6 +491,8 @@ class JobMonitor:
                     schedule_check = "удаленная работа " + schedule_title.lower()
                 else:
                     schedule_check = schedule_title.lower()
+                if superjob_looks_remote(raw) and pow_obj.get("id") != 2:
+                    schedule_check = schedule_check + " удален дистанц гибкий график"
                 employment_title = ((raw.get("type_of_work") or {}).get("title")) or "n/a"
                 employment_check = employment_title.lower()
 
@@ -510,6 +543,7 @@ class JobMonitor:
                 break
 
         items.sort(key=lambda x: (x.fit_score, x.published_at), reverse=True)
+        logging.info("Superjob: total matched after all filters: %s", len(items))
         return items
 
     def ai_fit_score(self, text: str, fit_cfg: dict[str, Any]) -> int:
