@@ -2,11 +2,11 @@
   "provider": "superjob",
   "search": {
     "query": "(контент-менеджер OR оператор чата OR менеджер маркетплейса) AND (удаленно OR remote)",
-    "superjob_keyword": "контент менеджер удаленно",
+    "superjob_keyword": "контент менеджер",
     "per_page": 50,
     "pages": 3,
     "lookback_hours": 24,
-    "min_salary_rub": 40000,
+    "min_salary_rub": 0,
     "only_with_salary": false,
     "allowed_schedule": [
       "удален",
@@ -20,21 +20,23 @@
     ]
   },
   "fit_keywords": {
-    "min_fit_percent": 45,
+    "min_fit_percent": 35,
     "must": [
       "удал",
-      "контент",
-      "карточ",
-      "товар"
+      "контент"
     ],
     "nice": [
+      "карточ",
+      "товар",
       "wb",
       "wildberries",
       "ozon",
       "excel",
       "таблиц",
       "чат",
-      "crm"
+      "crm",
+      "маркетплейс",
+      "оператор"
     ],
     "exclude": [
       "крипт",
@@ -45,7 +47,7 @@
     ]
   },
   "risk": {
-    "max_risk_score": 45,
+    "max_risk_score": 55,
     "high_salary_without_exp_rub": 250000,
     "marketplace_account_flags": [
       "личн",
