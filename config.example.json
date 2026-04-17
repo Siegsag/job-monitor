@@ -1,0 +1,83 @@
+{
+  "search": {
+    "query": "(контент-менеджер OR оператор чата OR менеджер маркетплейса) AND (удаленно OR remote)",
+    "per_page": 50,
+    "pages": 3,
+    "lookback_hours": 24,
+    "min_salary_rub": 40000,
+    "only_with_salary": false,
+    "allowed_schedule": [
+      "удален",
+      "гибк"
+    ],
+    "allowed_employment": [
+      "полная",
+      "частичная"
+    ]
+  },
+  "fit_keywords": {
+    "min_fit_percent": 45,
+    "must": [
+      "удал",
+      "контент",
+      "карточ",
+      "товар"
+    ],
+    "nice": [
+      "wb",
+      "wildberries",
+      "ozon",
+      "excel",
+      "таблиц",
+      "чат",
+      "crm"
+    ],
+    "exclude": [
+      "крипт",
+      "ставк",
+      "казино",
+      "18+",
+      "без опыта с зарплатой от 300000"
+    ]
+  },
+  "risk": {
+    "max_risk_score": 45,
+    "high_salary_without_exp_rub": 250000,
+    "marketplace_account_flags": [
+      "личн",
+      "ваш аккаунт",
+      "с вашего аккаунта",
+      "avito аккаунт",
+      "личный кабинет продавца",
+      "доступ к вашему профилю"
+    ],
+    "phrase_penalties": {
+      "предоплат": 40,
+      "оплатите обучение": 45,
+      "страховой взнос": 45,
+      "гарантийный взнос": 45,
+      "выкуп товара": 40,
+      "вложения": 30,
+      "быстрый заработок": 20
+    }
+  },
+  "storage": {
+    "state_file": "data/jobs.json",
+    "max_age_days": 7
+  },
+  "email": {
+    "digest_always": true,
+    "smtp_host_env": "SMTP_HOST",
+    "smtp_port_env": "SMTP_PORT",
+    "smtp_user_env": "SMTP_USER",
+    "smtp_pass_env": "SMTP_PASS",
+    "smtp_from_env": "SMTP_FROM",
+    "smtp_to_env": "SMTP_TO"
+  },
+  "network": {
+    "timeout_sec": 20
+  },
+  "logging": {
+    "file": "logs/monitor.log"
+  }
+}
