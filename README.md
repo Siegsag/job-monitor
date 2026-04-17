@@ -4,7 +4,8 @@ Monitors fresh vacancies every day, filters them by your profile prompt, applies
 
 ## What it does
 
-- pulls fresh vacancies from HH API;
+- pulls fresh vacancies from **Superjob API** by default (no HeadHunter employer account needed);
+- optional provider **`hh`** (HeadHunter) if you can satisfy their API access rules;
 - calculates `AI fit %` against your keyword profile;
 - calculates scam risk score and removes risky items;
 - stores current active list in `data/jobs.json`;
@@ -84,6 +85,11 @@ Required GitHub repository secrets:
 - `SMTP_PASS`
 - `SMTP_FROM`
 - `SMTP_TO`
+- `SUPERJOB_APP_ID` — secret key from [Superjob API registration](https://api.superjob.ru/register) (same value as header `X-Api-App-Id`)
+
+Optional (only if `provider` is `hh` in `config.json`):
+
+- `HH_USER_AGENT`, `HH_ACCESS_TOKEN` — see HeadHunter section below.
 
 ## Daily auto-run on Windows (alternative)
 
@@ -98,3 +104,19 @@ schtasks /create /tn "JobMonitorDaily" /sc daily /st 09:00 /tr "powershell -NoPr
 - For Gmail, use App Password (not your normal password).
 - `lookback_hours` controls freshness (default 24h).
 - `max_age_days` controls how long active vacancies can remain before forced cleanup.
+
+## Superjob setup (default)
+
+1. Register an application: [https://api.superjob.ru/register](https://api.superjob.ru/register).
+2. Copy the **secret key** (used as `X-Api-App-Id`).
+3. Put it into GitHub secret **`SUPERJOB_APP_ID`** (or into `superjob.app_id` in `config.json` if you accept storing it in the repo).
+4. Tune search in `config.json`: `search.superjob_keyword` (plain text, not HH query syntax).
+
+If you previously used HeadHunter IDs in `data/jobs.json`, delete or reset that file when switching providers (or old rows will linger).
+
+## HeadHunter (`provider: hh`) — `403` in CI
+
+HeadHunter often blocks cloud runners and/or requires employer-side app registration. If you set `provider` to `hh`, you may need:
+
+1. `HH_USER_AGENT` like `MyApp/1.0 (you@email.com)` — see [hh API docs](https://github.com/hhru/api).
+2. `HH_ACCESS_TOKEN` from [dev.hh.ru/admin](https://dev.hh.ru/admin) if anonymous requests fail.

@@ -34,6 +34,9 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           SMTP_TO: ${{ secrets.SMTP_TO }}
+          SUPERJOB_APP_ID: ${{ secrets.SUPERJOB_APP_ID }}
+          HH_USER_AGENT: ${{ secrets.HH_USER_AGENT }}
+          HH_ACCESS_TOKEN: ${{ secrets.HH_ACCESS_TOKEN }}
         run: python monitor.py
 
       - name: Commit updated state

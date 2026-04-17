@@ -1,6 +1,8 @@
 {
+  "provider": "superjob",
   "search": {
-    "query": "(контент-менеджер OR оператор чата OR менеджер маркетплейса) AND (удаленно OR remote)",
+    "query": "(legacy HH syntax; not used when provider is superjob)",
+    "superjob_keyword": "контент менеджер удаленно",
     "per_page": 50,
     "pages": 3,
     "lookback_hours": 24,
@@ -11,8 +13,10 @@
       "гибк"
     ],
     "allowed_employment": [
-      "полная",
-      "частичная"
+      "полн",
+      "частич",
+      "смен",
+      "времен"
     ]
   },
   "fit_keywords": {
@@ -79,5 +83,13 @@
   },
   "logging": {
     "file": "logs/monitor.log"
+  },
+  "hh_api": {
+    "user_agent": "job-monitor/1.0 (your-email@example.com)"
+  },
+  "superjob": {
+    "app_id": "",
+    "remote_only": true,
+    "place_of_work": 2
   }
 }

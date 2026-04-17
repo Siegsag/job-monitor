@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import smtplib
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -17,7 +18,75 @@ import requests
 
 
 HH_API_URL = "https://api.hh.ru/vacancies"
-USER_AGENT = "job-monitor-bot/1.0"
+SUPERJOB_API_URL = "https://api.superjob.ru/2.0/vacancies/"
+
+
+def build_hh_session_headers(config: dict[str, Any]) -> dict[str, str]:
+    """HH requires a descriptive User-Agent, usually: AppName/1.0 (you@email.com)."""
+    hh_cfg = config.get("hh_api") or {}
+    ua = (
+        os.environ.get("HH_USER_AGENT", "").strip()
+        or str(hh_cfg.get("user_agent", "")).strip()
+        or "job-monitor/1.0 (replace-with-your-email@example.com)"
+    )
+    token = os.environ.get("HH_ACCESS_TOKEN", "").strip()
+    headers: dict[str, str] = {"User-Agent": ua}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def superjob_unix_to_iso(ts: int | None) -> str:
+    if not ts:
+        return now_utc().isoformat()
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+
+
+def superjob_salary_text(obj: dict[str, Any]) -> str:
+    if obj.get("agreement"):
+        return "по договоренности"
+    pf = int(obj.get("payment_from") or 0)
+    pt = int(obj.get("payment_to") or 0)
+    cur = (obj.get("currency") or "rub").upper()
+    if pf and pt:
+        return f"{pf}-{pt} {cur}"
+    if pf:
+        return f"from {pf} {cur}"
+    if pt:
+        return f"up to {pt} {cur}"
+    return "n/a"
+
+
+def superjob_max_rub(obj: dict[str, Any]) -> int:
+    if obj.get("agreement"):
+        return 0
+    cur = (obj.get("currency") or "rub").lower()
+    if cur not in ("rub", "rur", ""):
+        return 0
+    return int(obj.get("payment_to") or obj.get("payment_from") or 0)
+
+
+def superjob_to_scam_raw(obj: dict[str, Any]) -> dict[str, Any]:
+    pf = int(obj.get("payment_from") or 0)
+    pt = int(obj.get("payment_to") or 0)
+    salary = None
+    if not obj.get("agreement") and (pf or pt):
+        salary = {"currency": "RUR", "from": pf, "to": pt or pf, "gross": False}
+    exp_id = (obj.get("experience") or {}).get("id")
+    try:
+        exp_num = int(exp_id) if exp_id is not None else -1
+    except (TypeError, ValueError):
+        exp_num = -1
+    exp_hh = {1: "noExperience", 2: "between1And3", 3: "between3And6", 4: "moreThan6"}.get(exp_num, "")
+    return {
+        "salary": salary,
+        "employer": {"name": obj.get("firm_name") or "n/a", "trusted": False},
+        "experience": {"id": exp_hh},
+        "snippet": {
+            "requirement": (obj.get("candidat") or "")[:800],
+            "responsibility": (obj.get("work") or "")[:800],
+        },
+    }
 
 
 def now_utc() -> datetime:
@@ -136,8 +205,27 @@ class JobMonitor:
         self.dry_run = dry_run
         self.state_file = Path(config["storage"]["state_file"])
         self.requests_timeout = int(config.get("network", {}).get("timeout_sec", 20))
+        self.provider = (config.get("provider") or "superjob").strip().lower()
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        if self.provider == "hh":
+            self.session.headers.update(build_hh_session_headers(config))
+        elif self.provider == "superjob":
+            sj = config.get("superjob") or {}
+            app_id = os.environ.get("SUPERJOB_APP_ID", "").strip() or str(sj.get("app_id", "")).strip()
+            if not app_id:
+                raise ValueError(
+                    "Superjob: set repository secret SUPERJOB_APP_ID or superjob.app_id in config.json "
+                    "(register at https://api.superjob.ru/register)."
+                )
+            self.superjob_app_id = app_id
+            self.session.headers.update(
+                {
+                    "User-Agent": "job-monitor/1.0 (superjob)",
+                    "X-Api-App-Id": app_id,
+                }
+            )
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}. Use 'superjob' or 'hh'.")
 
     def run(self) -> None:
         state = load_json(self.state_file, {"vacancies": {}, "updated_at": None})
@@ -170,6 +258,11 @@ class JobMonitor:
         self.send_report_if_needed(active_after, new_items)
 
     def fetch_vacancies(self) -> list[VacancyRecord]:
+        if self.provider == "superjob":
+            return self.fetch_superjob_vacancies()
+        return self.fetch_hh_vacancies()
+
+    def fetch_hh_vacancies(self) -> list[VacancyRecord]:
         search = self.config["search"]
         fit_cfg = self.config["fit_keywords"]
         risk_cfg = self.config["risk"]
@@ -195,6 +288,13 @@ class JobMonitor:
             params = dict(params_base)
             params["page"] = page
             resp = self.session.get(HH_API_URL, params=params, timeout=self.requests_timeout)
+            if not resp.ok:
+                logging.error(
+                    "HH API HTTP %s for %s — body (truncated): %s",
+                    resp.status_code,
+                    resp.url,
+                    (resp.text or "")[:2000],
+                )
             resp.raise_for_status()
             payload = resp.json()
 
@@ -253,6 +353,143 @@ class JobMonitor:
                         risk_reasons=risk_reasons,
                     )
                 )
+
+        items.sort(key=lambda x: (x.fit_score, x.published_at), reverse=True)
+        return items
+
+    def fetch_superjob_vacancies(self) -> list[VacancyRecord]:
+        search = self.config["search"]
+        sj_cfg = self.config.get("superjob") or {}
+        fit_cfg = self.config["fit_keywords"]
+        risk_cfg = self.config["risk"]
+
+        keyword = (
+            os.environ.get("SUPERJOB_KEYWORD", "").strip()
+            or str(search.get("superjob_keyword") or search.get("keyword") or "").strip()
+            or re.sub(r"\s+", " ", str(search.get("query", "")).replace("(", " ").replace(")", " "))[:200]
+        )
+        if not keyword:
+            raise ValueError("Superjob: set search.superjob_keyword or search.keyword in config.json")
+
+        lookback_hours = int(search.get("lookback_hours", 24))
+        if lookback_hours <= 24:
+            period = 1
+        elif lookback_hours <= 72:
+            period = 3
+        elif lookback_hours <= 168:
+            period = 7
+        else:
+            period = 0
+
+        max_pages = int(search.get("pages", 3))
+        per_page = min(int(search.get("per_page", 50)), 100)
+        min_salary = int(search.get("min_salary_rub", 0))
+        min_fit = int(fit_cfg.get("min_fit_percent", 40))
+        max_risk = int(risk_cfg.get("max_risk_score", 45))
+        cutoff = now_utc() - timedelta(hours=lookback_hours)
+
+        remote_only = bool(sj_cfg.get("remote_only", True))
+        place_of_work = sj_cfg.get("place_of_work")
+        if place_of_work is None:
+            place_of_work = 2 if remote_only else None
+
+        items: list[VacancyRecord] = []
+        seen_ids: set[str] = set()
+
+        for page in range(max_pages):
+            params: dict[str, Any] = {
+                "keyword": keyword,
+                "order_field": "date",
+                "order_direction": "desc",
+                "page": page,
+                "count": per_page,
+                "period": period,
+            }
+            if search.get("only_with_salary"):
+                params["no_agreement"] = 1
+            if min_salary:
+                params["payment_from"] = min_salary
+            if place_of_work is not None:
+                params["place_of_work"] = int(place_of_work)
+
+            resp = self.session.get(SUPERJOB_API_URL, params=params, timeout=self.requests_timeout)
+            if not resp.ok:
+                logging.error(
+                    "Superjob API HTTP %s — body (truncated): %s",
+                    resp.status_code,
+                    (resp.text or "")[:2000],
+                )
+            resp.raise_for_status()
+            payload = resp.json()
+            objects = payload.get("objects") or []
+
+            for raw in objects:
+                oid = raw.get("id")
+                if oid is None:
+                    continue
+                vid = f"sj_{oid}"
+                if vid in seen_ids:
+                    continue
+                seen_ids.add(vid)
+
+                pub_ts = raw.get("date_published")
+                published = superjob_unix_to_iso(int(pub_ts)) if pub_ts else now_utc().isoformat()
+                try:
+                    if parse_iso_dt(published) < cutoff:
+                        continue
+                except Exception:
+                    pass
+
+                pow_obj = raw.get("place_of_work") or {}
+                schedule_title = (pow_obj.get("title")) or "n/a"
+                if pow_obj.get("id") == 2:
+                    schedule_check = "удаленная работа " + schedule_title.lower()
+                else:
+                    schedule_check = schedule_title.lower()
+                employment_title = ((raw.get("type_of_work") or {}).get("title")) or "n/a"
+                employment_check = employment_title.lower()
+
+                if not self.schedule_ok(schedule_check, search.get("allowed_schedule", [])):
+                    continue
+                if not self.employment_ok(employment_check, search.get("allowed_employment", [])):
+                    continue
+
+                max_rub = superjob_max_rub(raw)
+                if min_salary and max_rub and max_rub < min_salary:
+                    continue
+
+                name = raw.get("profession") or "n/a"
+                employer = raw.get("firm_name") or "n/a"
+                snippet = " ".join([raw.get("candidat") or "", raw.get("work") or ""]).strip()
+                scam_raw = superjob_to_scam_raw(raw)
+                text_for_checks = normalize_text(f"{name} {snippet}")
+
+                fit_score = self.ai_fit_score(text_for_checks, fit_cfg)
+                risk_score, risk_level, risk_reasons = self.scam_score(text_for_checks, scam_raw, risk_cfg)
+                if fit_score < min_fit or risk_score > max_risk:
+                    continue
+
+                items.append(
+                    VacancyRecord(
+                        vacancy_id=vid,
+                        name=name,
+                        employer=employer,
+                        salary_text=superjob_salary_text(raw),
+                        salary_max_rub=max_rub,
+                        schedule=schedule_title,
+                        employment=employment_title,
+                        published_at=published,
+                        link=raw.get("link") or "",
+                        snippet=re.sub(r"\s+", " ", snippet)[:700],
+                        fit_score=fit_score,
+                        risk_score=risk_score,
+                        risk_level=risk_level,
+                        risk_reasons=risk_reasons,
+                    )
+                )
+
+            if not payload.get("more"):
+                break
 
         items.sort(key=lambda x: (x.fit_score, x.published_at), reverse=True)
         return items
@@ -366,6 +603,20 @@ class JobMonitor:
                 row["removed_at"] = now.isoformat()
 
     def vacancy_archived(self, vacancy_id: str) -> bool:
+        if self.provider == "superjob":
+            eid = vacancy_id.removeprefix("sj_")
+            url = f"{SUPERJOB_API_URL.rstrip('/')}/{eid}/"
+            try:
+                resp = self.session.get(url, timeout=self.requests_timeout)
+                if resp.status_code == 404:
+                    return True
+                if not resp.ok:
+                    return False
+                payload = resp.json()
+                return bool(payload.get("is_archive") or payload.get("is_storage"))
+            except requests.RequestException:
+                return False
+
         url = f"{HH_API_URL}/{vacancy_id}"
         try:
             resp = self.session.get(url, timeout=self.requests_timeout)
@@ -397,7 +648,11 @@ class JobMonitor:
             return
 
         smtp_host = os.environ.get(email_cfg.get("smtp_host_env", "SMTP_HOST"), "")
-        smtp_port = int(os.environ.get(email_cfg.get("smtp_port_env", "SMTP_PORT"), "587"))
+        port_env = os.environ.get(email_cfg.get("smtp_port_env", "SMTP_PORT"), "").strip()
+        try:
+            smtp_port = int(port_env) if port_env else 587
+        except ValueError as exc:
+            raise ValueError(f"Invalid SMTP_PORT value: {port_env!r}") from exc
         smtp_user = os.environ.get(email_cfg.get("smtp_user_env", "SMTP_USER"), "")
         smtp_pass = os.environ.get(email_cfg.get("smtp_pass_env", "SMTP_PASS"), "")
         from_addr = os.environ.get(email_cfg.get("smtp_from_env", "SMTP_FROM"), "")
@@ -417,16 +672,21 @@ class JobMonitor:
 
         subject = f"Job Monitor: {len(new_items)} new, {len(active)} active"
         body = self.build_email_body(active, new_items)
-        self.send_email(
-            smtp_host=smtp_host,
-            smtp_port=smtp_port,
-            smtp_user=smtp_user,
-            smtp_pass=smtp_pass,
-            from_addr=from_addr,
-            to_addr=to_addr,
-            subject=subject,
-            body=body,
-        )
+        try:
+            self.send_email(
+                smtp_host=smtp_host,
+                smtp_port=smtp_port,
+                smtp_user=smtp_user,
+                smtp_pass=smtp_pass,
+                from_addr=from_addr,
+                to_addr=to_addr,
+                subject=subject,
+                body=body,
+            )
+        except smtplib.SMTPException as exc:
+            logging.error("SMTP failed (%s:%s user=%s): %s", smtp_host, smtp_port, smtp_user, exc)
+            logging.error("If Gmail: use App Password + 2FA; SMTP_HOST=smtp.gmail.com SMTP_PORT=587")
+            raise
         logging.info("Email sent to %s", to_addr)
 
     def build_email_body(self, active: list[dict[str, Any]], new_items: list[dict[str, Any]]) -> str:
@@ -526,7 +786,11 @@ def main() -> None:
     setup_logging(Path(config.get("logging", {}).get("file", "logs/monitor.log")))
 
     monitor = JobMonitor(config=config, disable_email=args.disable_email, dry_run=args.dry_run)
-    monitor.run()
+    try:
+        monitor.run()
+    except Exception:
+        logging.error("Monitor failed:\n%s", traceback.format_exc())
+        raise
 
 
 if __name__ == "__main__":
