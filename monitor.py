@@ -110,6 +110,19 @@ def save_json(path: Path, payload: Any) -> None:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
 
 
+def normalize_smtp_host(raw: str) -> str:
+    h = (raw or "").strip()
+    if not h:
+        return ""
+    if "://" in h:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(h if "://" in h else f"https://{h}")
+        if parsed.hostname:
+            return parsed.hostname.strip()
+    return h.split("/")[0].strip()
+
+
 def load_dotenv_file(path: Path) -> None:
     if not path.exists():
         return
@@ -647,7 +660,7 @@ class JobMonitor:
             logging.info("Dry run enabled, email skipped.")
             return
 
-        smtp_host = os.environ.get(email_cfg.get("smtp_host_env", "SMTP_HOST"), "")
+        smtp_host = normalize_smtp_host(os.environ.get(email_cfg.get("smtp_host_env", "SMTP_HOST"), ""))
         port_env = os.environ.get(email_cfg.get("smtp_port_env", "SMTP_PORT"), "").strip()
         try:
             smtp_port = int(port_env) if port_env else 587
@@ -683,6 +696,15 @@ class JobMonitor:
                 subject=subject,
                 body=body,
             )
+        except OSError as exc:
+            logging.error(
+                "SMTP connection failed (%s:%s): %s. Check GitHub secret SMTP_HOST "
+                "(use hostname only, e.g. smtp.gmail.com — not a URL, no spaces).",
+                smtp_host,
+                smtp_port,
+                exc,
+            )
+            raise
         except smtplib.SMTPException as exc:
             logging.error("SMTP failed (%s:%s user=%s): %s", smtp_host, smtp_port, smtp_user, exc)
             logging.error("If Gmail: use App Password + 2FA; SMTP_HOST=smtp.gmail.com SMTP_PORT=587")
