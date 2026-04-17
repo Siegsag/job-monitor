@@ -4,7 +4,7 @@
     "query": "(контент-менеджер OR оператор чата OR менеджер маркетплейса) AND (удаленно OR remote)",
     "superjob_keyword": "контент менеджер",
     "per_page": 50,
-    "pages": 3,
+    "pages": 5,
     "lookback_hours": 24,
     "min_salary_rub": 0,
     "only_with_salary": false,
@@ -12,12 +12,7 @@
       "удален",
       "гибк"
     ],
-    "allowed_employment": [
-      "полн",
-      "частич",
-      "смен",
-      "времен"
-    ]
+    "allowed_employment": []
   },
   "fit_keywords": {
     "min_fit_percent": 35,

@@ -435,6 +435,7 @@ class JobMonitor:
             resp.raise_for_status()
             payload = resp.json()
             objects = payload.get("objects") or []
+            logging.info("Superjob page %s: API returned %s vacancies (more=%s)", page, len(objects), payload.get("more"))
 
             for raw in objects:
                 oid = raw.get("id")
@@ -476,6 +477,10 @@ class JobMonitor:
                 snippet = " ".join([raw.get("candidat") or "", raw.get("work") or ""]).strip()
                 scam_raw = superjob_to_scam_raw(raw)
                 text_for_checks = normalize_text(f"{name} {snippet}")
+                if pow_obj.get("id") == 2:
+                    text_for_checks = normalize_text(
+                        f"{text_for_checks} удаленная работа дистанционно на дому"
+                    )
 
                 fit_score = self.ai_fit_score(text_for_checks, fit_cfg)
                 risk_score, risk_level, risk_reasons = self.scam_score(text_for_checks, scam_raw, risk_cfg)
